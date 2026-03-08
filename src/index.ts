@@ -1,9 +1,5 @@
 import { Client, GatewayIntentBits, Events, REST, Routes, PermissionsBitField } from 'discord.js';
-import { createServer } from 'http';
 import { setDefaultResultOrder } from 'dns';
-
-// Force IPv4 — Render free tier has issues routing IPv6 to Discord's gateway
-setDefaultResultOrder('ipv4first');
 import { config } from './config';
 import { initDatabase, closeDatabase } from './db/database';
 import { userMappingService } from './services/userMapping';
@@ -21,14 +17,8 @@ import {
 } from './commands/handler';
 import { logger } from './utils/logger';
 
-// Keep-alive HTTP server — required by Render, pinged by UptimeRobot to prevent sleep
-const PORT = process.env.PORT || 3000;
-createServer((_, res) => {
-  res.writeHead(200);
-  res.end('OK');
-}).listen(PORT, () => {
-  logger.info(`Health check server listening on port ${PORT}`);
-});
+// Prefer IPv4 to avoid routing issues on some cloud providers
+setDefaultResultOrder('ipv4first');
 
 async function registerCommands(clientId: string): Promise<void> {
   const rest = new REST().setToken(config.discord.token);

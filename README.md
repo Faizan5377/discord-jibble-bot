@@ -8,7 +8,7 @@ All bot responses are **private (ephemeral)** — only the person who ran the co
 
 ## Features
 
-- `/clockin` `/break` `/resume` `/clockout` — full time-tracking workflow with order enforcement (can't clock out while on break, can't break before clocking in, etc.)
+- `/clockin` `/break` `/resume` `/clockout` — full time-tracking workflow with order enforcement
 - `/status` — see your current state and today's hours worked
 - `/report` — admin-only attendance reports with analytics: attendance %, total hours, avg per day, daily log
   - Filter by month, ISO month (`2026-03`), or custom date range (`25 feb to 25 march`)
@@ -33,12 +33,11 @@ All bot responses are **private (ephemeral)** — only the person who ran the co
 2. Click **New Application** → give it a name → click **Create**
 3. Go to **Bot** in the left sidebar
 4. Click **Reset Token** → copy the token (you'll need it for `DISCORD_BOT_TOKEN`)
-5. Scroll down to **Privileged Gateway Intents** — no special intents are needed, leave them off
-6. Go to **OAuth2 → URL Generator**:
+5. Go to **OAuth2 → URL Generator**:
    - Scopes: `bot`, `applications.commands`
    - Bot permissions: `Send Messages`, `Embed Links`, `Read Message History`
-7. Copy the generated URL → paste in your browser → invite the bot to your server
-8. In your Discord server, go to the channel you want the bot to use → right-click the channel → **Copy Channel ID** (enable Developer Mode in Discord settings first)
+6. Copy the generated URL → paste in your browser → invite the bot to your server
+7. In your Discord server, right-click the channel you want the bot to use → **Copy Channel ID** (enable Developer Mode in Discord settings first)
 
 ---
 
@@ -134,20 +133,20 @@ Only admins can register users. Once the bot is running:
 
 ---
 
-## Deploy to Render (Free, 24/7)
+## Deploy to Railway (Free, 24/7)
 
-1. Go to [render.com](https://render.com) → sign up with GitHub
-2. Click **New → Web Service** → select this repo
-3. Render auto-detects the config from `render.yaml`
-4. Go to the **Environment** tab → add your 4 env variables
-5. Click **Deploy** — the bot comes online automatically
+1. Go to [railway.app](https://railway.app) → sign up with GitHub
+2. Click **New Project** → **Deploy from GitHub repo** → select `discord-jibble-bot`
+3. Go to the **Variables** tab → add your 4 env variables:
+   ```
+   DISCORD_BOT_TOKEN
+   DISCORD_CHANNEL_ID
+   JIBBLE_CLIENT_ID
+   JIBBLE_CLIENT_SECRET
+   ```
+4. Railway builds and deploys automatically — bot stays online 24/7
 
-**Prevent Render from sleeping (free):**
-1. Go to [uptimerobot.com](https://uptimerobot.com) → sign up free
-2. Add a new **HTTP(s)** monitor pointing to your Render URL
-3. Set interval to **5 minutes** — UptimeRobot will keep the bot awake 24/7
-
-> **Note:** Render's filesystem is ephemeral — user mappings stored in `data/jibble-bot.json` will reset on each redeploy. Re-register users with `/register` after any new deployment.
+> **Note:** Railway's filesystem is ephemeral — user mappings stored in `data/jibble-bot.json` will reset on each redeploy. Re-register users with `/register` after any new deployment.
 
 ---
 
