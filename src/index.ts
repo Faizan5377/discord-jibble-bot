@@ -121,12 +121,15 @@ async function main(): Promise<void> {
   process.on('SIGTERM', shutdown);
 
   logger.info('Connecting to Discord...');
-  try {
-    await client.login(config.discord.token);
-  } catch (err) {
+  await Promise.race([
+    client.login(config.discord.token),
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Login timed out after 30s — invalid token or network issue')), 30000)
+    ),
+  ]).catch((err) => {
     logger.error('Failed to login to Discord — check your DISCORD_BOT_TOKEN:', err);
     process.exit(1);
-  }
+  });
 }
 
 main().catch((err: unknown) => {
