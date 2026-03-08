@@ -1,5 +1,9 @@
 import { Client, GatewayIntentBits, Events, REST, Routes, PermissionsBitField } from 'discord.js';
 import { createServer } from 'http';
+import { setDefaultResultOrder } from 'dns';
+
+// Force IPv4 — Render free tier has issues routing IPv6 to Discord's gateway
+setDefaultResultOrder('ipv4first');
 import { config } from './config';
 import { initDatabase, closeDatabase } from './db/database';
 import { userMappingService } from './services/userMapping';
