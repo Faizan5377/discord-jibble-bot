@@ -120,14 +120,24 @@ async function main(): Promise<void> {
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
 
-  logger.info('Connecting to Discord...');
+  // Verify token via REST before opening the WebSocket connection
+  logger.info('Verifying Discord token...');
+  try {
+    const rest = new REST().setToken(config.discord.token);
+    await rest.get(Routes.user('@me'));
+    logger.info('Token verified — connecting to gateway...');
+  } catch (err) {
+    logger.error('Token is invalid — update DISCORD_BOT_TOKEN in your environment:', (err as Error).message);
+    process.exit(1);
+  }
+
   await Promise.race([
     client.login(config.discord.token),
     new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Login timed out after 30s — invalid token or network issue')), 30000)
+      setTimeout(() => reject(new Error('Gateway timed out after 30s — possible network issue')), 30000)
     ),
   ]).catch((err) => {
-    logger.error('Failed to login to Discord — check your DISCORD_BOT_TOKEN:', err);
+    logger.error('Failed to connect to Discord gateway:', err);
     process.exit(1);
   });
 }
