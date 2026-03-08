@@ -120,10 +120,16 @@ async function main(): Promise<void> {
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
 
-  await client.login(config.discord.token);
+  logger.info('Connecting to Discord...');
+  try {
+    await client.login(config.discord.token);
+  } catch (err) {
+    logger.error('Failed to login to Discord — check your DISCORD_BOT_TOKEN:', err);
+    process.exit(1);
+  }
 }
 
 main().catch((err: unknown) => {
-  console.error('Fatal error during startup:', err);
+  logger.error('Fatal error during startup:', err);
   process.exit(1);
 });
