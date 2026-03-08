@@ -1,5 +1,6 @@
 import { Client, GatewayIntentBits, Events, REST, Routes, PermissionsBitField } from 'discord.js';
 import { createServer } from 'http';
+import axios from 'axios';
 import { config } from './config';
 import { initDatabase, closeDatabase } from './db/database';
 import { userMappingService } from './services/userMapping';
@@ -120,11 +121,22 @@ async function main(): Promise<void> {
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
 
-  // Verify token via REST before opening the WebSocket connection
+  // Test connectivity and token using axios (bypasses discord.js undici client)
+  logger.info('Testing connectivity to Discord API...');
+  try {
+    await axios.get('https://discord.com/api/v10/gateway', { timeout: 10000 });
+    logger.info('Discord API is reachable');
+  } catch (err) {
+    logger.error('Cannot reach Discord API — network issue on host:', (err as Error).message);
+    process.exit(1);
+  }
+
   logger.info('Verifying Discord token...');
   try {
-    const rest = new REST().setToken(config.discord.token);
-    await rest.get(Routes.user('@me'));
+    await axios.get('https://discord.com/api/v10/users/@me', {
+      headers: { Authorization: `Bot ${config.discord.token}` },
+      timeout: 10000,
+    });
     logger.info('Token verified — connecting to gateway...');
   } catch (err) {
     logger.error('Token is invalid — update DISCORD_BOT_TOKEN in your environment:', (err as Error).message);
@@ -134,7 +146,7 @@ async function main(): Promise<void> {
   await Promise.race([
     client.login(config.discord.token),
     new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Gateway timed out after 30s — possible network issue')), 30000)
+      setTimeout(() => reject(new Error('Gateway timed out after 30s')), 30000)
     ),
   ]).catch((err) => {
     logger.error('Failed to connect to Discord gateway:', err);
