@@ -79,10 +79,10 @@ async function main(): Promise<void> {
       : memberPerms ? new PermissionsBitField(BigInt(memberPerms as string)).has('Administrator') : false;
 
     if (!memberIsAdmin && BROADCAST_COMMANDS.has(interaction.commandName)) {
-      interaction.channel?.send({
+      (interaction.channel as { send?: Function })?.send?.({
         content: `> **${interaction.user.username}** used \`/${interaction.commandName}\``,
         allowedMentions: { parse: [] },
-      }).catch(() => undefined);
+      })?.catch(() => undefined);
     }
 
     logger.debug(`[${interaction.user.username}] /${interaction.commandName}`);

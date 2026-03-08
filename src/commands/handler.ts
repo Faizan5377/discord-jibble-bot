@@ -117,7 +117,7 @@ function isAdmin(interaction: ChatInputCommandInteraction): boolean {
   if (!perms) return false;
   return perms instanceof PermissionsBitField
     ? perms.has('Administrator')
-    : new PermissionsBitField(BigInt(perms)).has('Administrator');
+    : new PermissionsBitField(BigInt(perms as string)).has('Administrator');
 }
 
 function requireMapping(interaction: ChatInputCommandInteraction) {
