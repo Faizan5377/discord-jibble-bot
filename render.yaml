@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: discord-jibble-bot
+    runtime: node
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    plan: free
+    envVars:
+      - key: DISCORD_BOT_TOKEN
+        sync: false
+      - key: DISCORD_CHANNEL_ID
+        sync: false
+      - key: JIBBLE_CLIENT_ID
+        sync: false
+      - key: JIBBLE_CLIENT_SECRET
+        sync: false

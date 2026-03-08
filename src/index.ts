@@ -1,4 +1,5 @@
 import { Client, GatewayIntentBits, Events, REST, Routes, PermissionsBitField } from 'discord.js';
+import { createServer } from 'http';
 import { config } from './config';
 import { initDatabase, closeDatabase } from './db/database';
 import { userMappingService } from './services/userMapping';
@@ -15,6 +16,15 @@ import {
   handleHelp,
 } from './commands/handler';
 import { logger } from './utils/logger';
+
+// Keep-alive HTTP server — required by Render, pinged by UptimeRobot to prevent sleep
+const PORT = process.env.PORT || 3000;
+createServer((_, res) => {
+  res.writeHead(200);
+  res.end('OK');
+}).listen(PORT, () => {
+  logger.info(`Health check server listening on port ${PORT}`);
+});
 
 async function registerCommands(clientId: string): Promise<void> {
   const rest = new REST().setToken(config.discord.token);
