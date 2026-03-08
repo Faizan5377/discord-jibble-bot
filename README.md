@@ -134,15 +134,20 @@ Only admins can register users. Once the bot is running:
 
 ---
 
-## Deploy to Railway (Free, 24/7)
+## Deploy to Render (Free, 24/7)
 
-1. Push this repo to GitHub
-2. Go to [railway.app](https://railway.app) → sign in with GitHub
-3. Click **New Project** → **Deploy from GitHub repo** → select this repo
-4. Go to the **Variables** tab and add all four required env variables
-5. Railway builds and deploys automatically — the bot stays online 24/7
+1. Go to [render.com](https://render.com) → sign up with GitHub
+2. Click **New → Web Service** → select this repo
+3. Render auto-detects the config from `render.yaml`
+4. Go to the **Environment** tab → add your 4 env variables
+5. Click **Deploy** — the bot comes online automatically
 
-> **Note:** Railway's filesystem is ephemeral — user mappings stored in `data/jibble-bot.json` will reset on each redeploy. Re-register users with `/register` after any new deployment.
+**Prevent Render from sleeping (free):**
+1. Go to [uptimerobot.com](https://uptimerobot.com) → sign up free
+2. Add a new **HTTP(s)** monitor pointing to your Render URL
+3. Set interval to **5 minutes** — UptimeRobot will keep the bot awake 24/7
+
+> **Note:** Render's filesystem is ephemeral — user mappings stored in `data/jibble-bot.json` will reset on each redeploy. Re-register users with `/register` after any new deployment.
 
 ---
 
