@@ -9,8 +9,10 @@ function embed(color: ColorResolvable, description: string): EmbedBuilder {
   return new EmbedBuilder().setColor(color).setDescription(description).setTimestamp();
 }
 
+const PKT = 'Asia/Karachi';
+
 function nowStr(): string {
-  return new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', timeZoneName: 'short' });
+  return new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', timeZone: PKT, timeZoneName: 'short' });
 }
 
 function fmtMinutes(minutes: number): string {
@@ -279,9 +281,9 @@ async function buildStatusEmbed(
   try {
     const stats = await jibbleService.getTodayStats(mapping.jibblePersonId);
     if (stats.clockIn) {
-      const inStr = stats.clockIn.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+      const inStr = stats.clockIn.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', timeZone: PKT });
       const outStr = stats.clockOut
-        ? stats.clockOut.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
+        ? stats.clockOut.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', timeZone: PKT })
         : 'still clocked in';
       const brk = stats.breakMinutes > 0 ? ` · Break: ${fmtMinutes(stats.breakMinutes)}` : '';
       todayLine = `Clocked in at **${inStr}** → ${outStr}\nWorked today: **${fmtMinutes(stats.workedMinutes)}**${brk}`;
@@ -409,8 +411,8 @@ function buildReportEmbed(r: Report): EmbedBuilder {
   for (const d of r.days) {
     if (!d.clockIn) continue;
     const dateStr = new Date(d.date + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
-    const inStr = d.clockIn.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
-    const outStr = d.clockOut ? d.clockOut.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }) : 'no out';
+    const inStr = d.clockIn.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', timeZone: PKT });
+    const outStr = d.clockOut ? d.clockOut.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', timeZone: PKT }) : 'no out';
     const brk = d.breakMinutes > 0 ? ` (break: ${fmtMinutes(d.breakMinutes)})` : '';
     lines.push(`\`${dateStr}\`  ${inStr} → ${outStr}  **${fmtMinutes(d.workedMinutes)}**${brk}`);
   }
