@@ -315,10 +315,14 @@ class JibbleService {
   }
 
   async getReport(personId: string, personName: string, startDate: string, endDate: string, label: string): Promise<Report> {
-    // Fetch one extra day before startDate so that a cross-midnight shift
-    // starting on the day before the range boundary is captured fully.
+    // Extend the fetch window by 1 day on each side so that cross-midnight
+    // shifts at the range boundaries are captured in full:
+    //  • fetchFrom: catches a session whose In is on startDate-1 (edge case)
+    //  • fetchTo:   catches the Out that lands on endDate+1 for a shift that
+    //               started on endDate (e.g. 7 PM → 3 AM next day)
     const fetchFrom = shiftDate(startDate, -1);
-    const filter = `personId eq ${personId} and belongsToDate ge ${fetchFrom} and belongsToDate le ${endDate}`;
+    const fetchTo   = shiftDate(endDate, +1);
+    const filter = `personId eq ${personId} and belongsToDate ge ${fetchFrom} and belongsToDate le ${fetchTo}`;
     const url = `${config.jibble.timeTrackingUrl}/v1/TimeEntries?$filter=${encodeURIComponent(filter)}&$orderby=time asc&$top=500`;
 
     const raw = await this.request<unknown>('get', url);
