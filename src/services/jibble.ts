@@ -96,8 +96,12 @@ function calcDayStats(entries: TimeEntry[], countOpenTime = false): Omit<DayStat
       }
       lastBreakStart = t;
     } else if (e.type === 'Out') {
-      clockOut = t;
+      // Only count Out entries that have a matching In in this day's data.
+      // An Out with no preceding In is a cross-midnight leftover from the
+      // previous shift (e.g. 4:14 AM clock-out from last night's shift that
+      // Jibble tags to today's PKT date). Ignore it.
       if (lastInTime) {
+        clockOut = t;
         workedMinutes += (t.getTime() - lastInTime.getTime()) / 60000;
         lastInTime = null;
       }
