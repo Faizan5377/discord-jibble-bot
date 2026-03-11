@@ -69,9 +69,49 @@ function parseEntries(raw: unknown): TimeEntry[] {
   return [];
 }
 
-function calcDayStats(entries: TimeEntry[], countOpenTime = false): Omit<DayStats, 'date'> {
-  const sorted = entries.slice().sort((a, b) => new Date(a.time).getTime() - new Date(b.time).getTime());
+// Offset a YYYY-MM-DD string by N days
+function shiftDate(dateStr: string, days: number): string {
+  const d = new Date(dateStr + 'T00:00:00');
+  d.setDate(d.getDate() + days);
+  return d.toLocaleDateString('en-CA'); // YYYY-MM-DD
+}
 
+// Splits time entries into discrete work sessions sorted by time.
+// A new session begins each time an 'In' entry follows an 'Out'.
+// This correctly handles cross-midnight shifts: entries for the same session
+// may have different belongsToDate values (e.g. 7PM clock-in on day D and
+// 3AM clock-out tagged to day D+1). The session is attributed to the date of
+// its first 'In' entry.
+function groupIntoSessions(entries: TimeEntry[]): { date: string; entries: TimeEntry[] }[] {
+  const sorted = entries.slice().sort((a, b) => new Date(a.time).getTime() - new Date(b.time).getTime());
+  const sessions: { date: string; entries: TimeEntry[] }[] = [];
+  let current: TimeEntry[] = [];
+
+  for (const e of sorted) {
+    if (e.type === 'In') {
+      // If the previous session is fully closed, start a new one
+      if (current.length > 0 && current[current.length - 1].type === 'Out') {
+        sessions.push({ date: current[0].belongsToDate, entries: current });
+        current = [];
+      }
+      current.push(e);
+    } else if (current.length > 0) {
+      // StartBreak or Out — only attach if we are inside a session
+      current.push(e);
+    }
+    // Ignore any Out/StartBreak that appear before the first In
+  }
+
+  if (current.length > 0) {
+    sessions.push({ date: current[0].belongsToDate, entries: current });
+  }
+
+  return sessions;
+}
+
+// Calculates worked/break minutes for a single session's entries.
+// Entries must already be sorted ascending and form one continuous session.
+function calcDayStats(entries: TimeEntry[], countOpenTime = false): Omit<DayStats, 'date'> {
   let clockIn: Date | null = null;
   let clockOut: Date | null = null;
   let workedMinutes = 0;
@@ -79,7 +119,7 @@ function calcDayStats(entries: TimeEntry[], countOpenTime = false): Omit<DayStat
   let lastInTime: Date | null = null;
   let lastBreakStart: Date | null = null;
 
-  for (const e of sorted) {
+  for (const e of entries) {
     const t = new Date(e.time);
     if (e.type === 'In') {
       if (!clockIn) clockIn = t;
@@ -89,17 +129,13 @@ function calcDayStats(entries: TimeEntry[], countOpenTime = false): Omit<DayStat
       }
       lastInTime = t;
     } else if (e.type === 'StartBreak') {
-      // Close the current work segment before the break starts
+      // Close the current work segment before the break
       if (lastInTime) {
         workedMinutes += (t.getTime() - lastInTime.getTime()) / 60000;
         lastInTime = null;
       }
       lastBreakStart = t;
     } else if (e.type === 'Out') {
-      // Only count Out entries that have a matching In in this day's data.
-      // An Out with no preceding In is a cross-midnight leftover from the
-      // previous shift (e.g. 4:14 AM clock-out from last night's shift that
-      // Jibble tags to today's PKT date). Ignore it.
       if (lastInTime) {
         clockOut = t;
         workedMinutes += (t.getTime() - lastInTime.getTime()) / 60000;
@@ -108,13 +144,16 @@ function calcDayStats(entries: TimeEntry[], countOpenTime = false): Omit<DayStat
     }
   }
 
-  // Still clocked in (no Out yet) — count time up to now
+  // Still clocked in — count up to now
   if (countOpenTime && lastInTime && !lastBreakStart) {
     workedMinutes += (Date.now() - lastInTime.getTime()) / 60000;
   }
 
-  // Work segments already exclude break time — no further subtraction needed
-  return { clockIn, clockOut, workedMinutes: Math.round(Math.max(0, workedMinutes)), breakMinutes: Math.round(breakMinutes) };
+  return {
+    clockIn, clockOut,
+    workedMinutes: Math.round(Math.max(0, workedMinutes)),
+    breakMinutes: Math.round(breakMinutes),
+  };
 }
 
 class JibbleService {
@@ -254,45 +293,70 @@ class JibbleService {
   }
 
   async getTodayStats(personId: string): Promise<DayStats> {
-    const dateStr = pktDate(); // today in PKT
+    const today = pktDate();
+    const yesterday = pktDate(-1);
 
-    const filter = `personId eq ${personId} and belongsToDate eq ${dateStr}`;
-    const url = `${config.jibble.timeTrackingUrl}/v1/TimeEntries?$filter=${encodeURIComponent(filter)}&$orderby=time asc&$top=100`;
+    // Query both today and yesterday in PKT so that a cross-midnight shift
+    // (e.g. clock-in at 7 PM on day D, clock-out at 3 AM on day D+1) is
+    // captured in full regardless of which belongsToDate each entry carries.
+    const filter = `personId eq ${personId} and (belongsToDate eq ${today} or belongsToDate eq ${yesterday})`;
+    const url = `${config.jibble.timeTrackingUrl}/v1/TimeEntries?$filter=${encodeURIComponent(filter)}&$orderby=time asc&$top=200`;
 
     const raw = await this.request<unknown>('get', url);
     const entries = parseEntries(raw);
-    return { date: dateStr, ...calcDayStats(entries, true) };
+
+    const sessions = groupIntoSessions(entries);
+    // The last session is the most recent (current or just-finished shift)
+    const latest = sessions[sessions.length - 1];
+    const sessionEntries = latest?.entries ?? [];
+    const dateStr = latest?.date ?? today;
+
+    return { date: dateStr, ...calcDayStats(sessionEntries, true) };
   }
 
   async getReport(personId: string, personName: string, startDate: string, endDate: string, label: string): Promise<Report> {
-    const filter = `personId eq ${personId} and belongsToDate ge ${startDate} and belongsToDate le ${endDate}`;
+    // Fetch one extra day before startDate so that a cross-midnight shift
+    // starting on the day before the range boundary is captured fully.
+    const fetchFrom = shiftDate(startDate, -1);
+    const filter = `personId eq ${personId} and belongsToDate ge ${fetchFrom} and belongsToDate le ${endDate}`;
     const url = `${config.jibble.timeTrackingUrl}/v1/TimeEntries?$filter=${encodeURIComponent(filter)}&$orderby=time asc&$top=500`;
 
     const raw = await this.request<unknown>('get', url);
     const entries = parseEntries(raw);
 
-    // Group by date
-    const byDate = new Map<string, TimeEntry[]>();
-    for (const entry of entries) {
-      if (!byDate.has(entry.belongsToDate)) byDate.set(entry.belongsToDate, []);
-      byDate.get(entry.belongsToDate)!.push(entry);
+    // Group entries into sessions (handles cross-midnight shifts)
+    const sessions = groupIntoSessions(entries);
+
+    // Build per-date DayStats, attributing each session to its start date.
+    // Only include sessions whose start date falls within [startDate, endDate].
+    // Multiple sessions on the same date (e.g. two separate shifts) are summed.
+    const byDate = new Map<string, DayStats>();
+    for (const session of sessions) {
+      if (session.date < startDate || session.date > endDate) continue;
+      const stats = calcDayStats(session.entries, false);
+      if (!byDate.has(session.date)) {
+        byDate.set(session.date, { date: session.date, ...stats });
+      } else {
+        const existing = byDate.get(session.date)!;
+        byDate.set(session.date, {
+          date: session.date,
+          clockIn: existing.clockIn,                      // keep earliest clock-in
+          clockOut: stats.clockOut ?? existing.clockOut,  // keep latest clock-out
+          workedMinutes: existing.workedMinutes + stats.workedMinutes,
+          breakMinutes: existing.breakMinutes + stats.breakMinutes,
+        });
+      }
     }
 
-    // Count working days (Mon–Fri) in the range
+    // Count working days (Mon–Sat; Sunday off) in the requested range
     let totalWorkingDays = 0;
     const start = new Date(startDate + 'T00:00:00');
     const end = new Date(endDate + 'T00:00:00');
     for (const d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
-      const dow = d.getDay();
-      if (dow !== 0) totalWorkingDays++; // Mon–Sat; Sunday is the only off day
+      if (d.getDay() !== 0) totalWorkingDays++;
     }
 
-    const days: DayStats[] = [];
-    for (const [date, dayEntries] of byDate.entries()) {
-      days.push({ date, ...calcDayStats(dayEntries, false) });
-    }
-    days.sort((a, b) => a.date.localeCompare(b.date));
-
+    const days = Array.from(byDate.values()).sort((a, b) => a.date.localeCompare(b.date));
     const daysPresent = days.filter(d => d.clockIn !== null).length;
     const totalWorkedMinutes = days.reduce((s, d) => s + d.workedMinutes, 0);
     const totalBreakMinutes = days.reduce((s, d) => s + d.breakMinutes, 0);
