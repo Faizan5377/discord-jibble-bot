@@ -51,6 +51,15 @@ const PLATFORM_INFO = {
   deviceName: 'DiscordBot',
 };
 
+const PKT_TZ = 'Asia/Karachi';
+
+// Returns YYYY-MM-DD in Pakistan time, with optional day offset
+function pktDate(offsetDays = 0): string {
+  const d = new Date();
+  if (offsetDays) d.setDate(d.getDate() + offsetDays);
+  return d.toLocaleDateString('en-CA', { timeZone: PKT_TZ }); // en-CA gives YYYY-MM-DD
+}
+
 function parseEntries(raw: unknown): TimeEntry[] {
   if (Array.isArray(raw)) return raw as TimeEntry[];
   if (raw && typeof raw === 'object') {
@@ -80,6 +89,11 @@ function calcDayStats(entries: TimeEntry[], countOpenTime = false): Omit<DayStat
       }
       lastInTime = t;
     } else if (e.type === 'StartBreak') {
+      // Close the current work segment before the break starts
+      if (lastInTime) {
+        workedMinutes += (t.getTime() - lastInTime.getTime()) / 60000;
+        lastInTime = null;
+      }
       lastBreakStart = t;
     } else if (e.type === 'Out') {
       clockOut = t;
@@ -90,12 +104,13 @@ function calcDayStats(entries: TimeEntry[], countOpenTime = false): Omit<DayStat
     }
   }
 
+  // Still clocked in (no Out yet) — count time up to now
   if (countOpenTime && lastInTime && !lastBreakStart) {
     workedMinutes += (Date.now() - lastInTime.getTime()) / 60000;
   }
 
-  workedMinutes = Math.max(0, workedMinutes - breakMinutes);
-  return { clockIn, clockOut, workedMinutes: Math.round(workedMinutes), breakMinutes: Math.round(breakMinutes) };
+  // Work segments already exclude break time — no further subtraction needed
+  return { clockIn, clockOut, workedMinutes: Math.round(Math.max(0, workedMinutes)), breakMinutes: Math.round(breakMinutes) };
 }
 
 class JibbleService {
@@ -217,9 +232,7 @@ class JibbleService {
 
   // Returns current state based on most recent time entry across last 2 days
   async getCurrentState(personId: string): Promise<JibbleState> {
-    const pad = (n: number) => String(n).padStart(2, '0');
-    const yesterday = new Date(Date.now() - 86400000);
-    const sinceDate = `${yesterday.getFullYear()}-${pad(yesterday.getMonth() + 1)}-${pad(yesterday.getDate())}`;
+    const sinceDate = pktDate(-1); // yesterday in PKT
 
     const filter = `personId eq ${personId} and belongsToDate ge ${sinceDate}`;
     const url = `${config.jibble.timeTrackingUrl}/v1/TimeEntries?$filter=${encodeURIComponent(filter)}&$orderby=time desc&$top=10`;
@@ -237,9 +250,7 @@ class JibbleService {
   }
 
   async getTodayStats(personId: string): Promise<DayStats> {
-    const pad = (n: number) => String(n).padStart(2, '0');
-    const today = new Date();
-    const dateStr = `${today.getFullYear()}-${pad(today.getMonth() + 1)}-${pad(today.getDate())}`;
+    const dateStr = pktDate(); // today in PKT
 
     const filter = `personId eq ${personId} and belongsToDate eq ${dateStr}`;
     const url = `${config.jibble.timeTrackingUrl}/v1/TimeEntries?$filter=${encodeURIComponent(filter)}&$orderby=time asc&$top=100`;

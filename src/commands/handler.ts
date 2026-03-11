@@ -61,7 +61,8 @@ function parseSingleDate(s: string, defaultYear: number): Date | null {
 }
 
 function parsePeriodArg(arg: string | null): Period | null {
-  const today = new Date();
+  // Use PKT date so default "current month" is correct for Pakistan time
+  const today = new Date(new Date().toLocaleString('en-US', { timeZone: PKT }));
   const currentYear = today.getFullYear();
 
   if (!arg) {
