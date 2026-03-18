@@ -53,11 +53,11 @@ const PLATFORM_INFO = {
 
 const PKT_TZ = 'Asia/Karachi';
 
-// Returns YYYY-MM-DD in Pakistan time, with optional day offset
+// Returns YYYY-MM-DD in Pakistan time, with optional day offset.
+// Offset is applied as milliseconds so it is timezone-independent.
 function pktDate(offsetDays = 0): string {
-  const d = new Date();
-  if (offsetDays) d.setDate(d.getDate() + offsetDays);
-  return d.toLocaleDateString('en-CA', { timeZone: PKT_TZ }); // en-CA gives YYYY-MM-DD
+  return new Date(Date.now() + offsetDays * 86400000)
+    .toLocaleDateString('en-CA', { timeZone: PKT_TZ }); // en-CA gives YYYY-MM-DD
 }
 
 function parseEntries(raw: unknown): TimeEntry[] {
@@ -144,9 +144,15 @@ function calcDayStats(entries: TimeEntry[], countOpenTime = false): Omit<DayStat
     }
   }
 
-  // Still clocked in — count up to now
-  if (countOpenTime && lastInTime && !lastBreakStart) {
-    workedMinutes += (Date.now() - lastInTime.getTime()) / 60000;
+  if (countOpenTime) {
+    // Still clocked in (not on break) — count open work time up to now
+    if (lastInTime && !lastBreakStart) {
+      workedMinutes += (Date.now() - lastInTime.getTime()) / 60000;
+    }
+    // Currently on break — count ongoing break duration so status shows it
+    if (lastBreakStart) {
+      breakMinutes += (Date.now() - lastBreakStart.getTime()) / 60000;
+    }
   }
 
   return {
@@ -296,10 +302,10 @@ class JibbleService {
     const today = pktDate();
     const yesterday = pktDate(-1);
 
-    // Query both today and yesterday in PKT so that a cross-midnight shift
-    // (e.g. clock-in at 7 PM on day D, clock-out at 3 AM on day D+1) is
-    // captured in full regardless of which belongsToDate each entry carries.
-    const filter = `personId eq ${personId} and (belongsToDate eq ${today} or belongsToDate eq ${yesterday})`;
+    // Use a date range (ge/le) rather than OR so the filter is standard OData
+    // that Jibble definitely supports. The range captures both days, which is
+    // necessary for cross-midnight shifts (clock-in on day D, clock-out on D+1).
+    const filter = `personId eq ${personId} and belongsToDate ge ${yesterday} and belongsToDate le ${today}`;
     const url = `${config.jibble.timeTrackingUrl}/v1/TimeEntries?$filter=${encodeURIComponent(filter)}&$orderby=time asc&$top=200`;
 
     const raw = await this.request<unknown>('get', url);

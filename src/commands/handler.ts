@@ -287,7 +287,7 @@ async function buildStatusEmbed(
         ? stats.clockOut.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', timeZone: PKT })
         : 'still clocked in';
       const brk = stats.breakMinutes > 0 ? ` · Break: ${fmtMinutes(stats.breakMinutes)}` : '';
-      todayLine = `Clocked in at **${inStr}** → ${outStr}\nWorked today: **${fmtMinutes(stats.workedMinutes)}**${brk}`;
+      todayLine = `Clocked in at **${inStr}** → ${outStr}\nWorked: **${fmtMinutes(stats.workedMinutes)}**${brk}`;
       color = stats.clockOut ? '#607d8b' : '#00c853';
     } else {
       todayLine = 'Not clocked in today.';
@@ -302,7 +302,7 @@ async function buildStatusEmbed(
     .addFields(
       { name: 'Jibble Name',  value: mapping.jibbleName,  inline: true },
       { name: 'Jibble Email', value: mapping.jibbleEmail, inline: true },
-      { name: 'Today',        value: todayLine,           inline: false },
+      { name: 'Last Shift',   value: todayLine,           inline: false },
     )
     .setTimestamp();
 }
