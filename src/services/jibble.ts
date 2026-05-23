@@ -27,19 +27,25 @@ export interface DayStats {
   clockOut: Date | null;
   workedMinutes: number;
   breakMinutes: number;
+  unclosed: boolean; // session has a clock-in but no clock-out
 }
 
 export interface Report {
   personName: string;
-  label: string; // e.g. "March 2026" or "25 Mar – 25 Apr 2026"
+  label: string; // e.g. "25 Apr – 24 May 2026"
   startDate: string;
   endDate: string;
   totalWorkingDays: number;
   daysPresent: number;
   daysAbsent: number;
+  absentDates: string[];        // working days in range with no work logged (YYYY-MM-DD)
   totalWorkedMinutes: number;
   totalBreakMinutes: number;
+  expectedTotalMinutes: number; // workingDays × expectedHoursPerDay × 60
+  unloggedMinutes: number;      // max(0, expected − worked)
+  overtimeMinutes: number;      // max(0, worked − expected)
   days: DayStats[];
+  unclosedDates: string[];      // YYYY-MM-DD of days needing manual review
 }
 
 export type JibbleState = 'clocked-in' | 'on-break' | 'clocked-out';
@@ -74,6 +80,11 @@ function shiftDate(dateStr: string, days: number): string {
   const d = new Date(dateStr + 'T00:00:00');
   d.setDate(d.getDate() + days);
   return d.toLocaleDateString('en-CA'); // YYYY-MM-DD
+}
+
+// YYYY-MM-DD for a local Date
+function toDateStr(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
 // Splits time entries into discrete work sessions sorted by time.
@@ -124,12 +135,16 @@ function calcDayStats(entries: TimeEntry[], countOpenTime = false): Omit<DayStat
     if (e.type === 'In') {
       if (!clockIn) clockIn = t;
       if (lastBreakStart) {
+        // Resuming from a break — close the break interval
         breakMinutes += (t.getTime() - lastBreakStart.getTime()) / 60000;
         lastBreakStart = null;
+      } else if (lastInTime) {
+        // Duplicate In with no intervening Out/StartBreak (e.g. Jibble UI accident).
+        // Treat the gap as continuous work rather than dropping it silently.
+        workedMinutes += (t.getTime() - lastInTime.getTime()) / 60000;
       }
       lastInTime = t;
     } else if (e.type === 'StartBreak') {
-      // Close the current work segment before the break
       if (lastInTime) {
         workedMinutes += (t.getTime() - lastInTime.getTime()) / 60000;
         lastInTime = null;
@@ -137,9 +152,14 @@ function calcDayStats(entries: TimeEntry[], countOpenTime = false): Omit<DayStat
       lastBreakStart = t;
     } else if (e.type === 'Out') {
       if (lastInTime) {
-        clockOut = t;
         workedMinutes += (t.getTime() - lastInTime.getTime()) / 60000;
         lastInTime = null;
+        clockOut = t;
+      } else if (lastBreakStart) {
+        // Clocked out while on break — close the break and mark clock-out
+        breakMinutes += (t.getTime() - lastBreakStart.getTime()) / 60000;
+        lastBreakStart = null;
+        clockOut = t;
       }
     }
   }
@@ -155,10 +175,13 @@ function calcDayStats(entries: TimeEntry[], countOpenTime = false): Omit<DayStat
     }
   }
 
+  const unclosed = clockIn !== null && clockOut === null;
+
   return {
     clockIn, clockOut,
     workedMinutes: Math.round(Math.max(0, workedMinutes)),
-    breakMinutes: Math.round(breakMinutes),
+    breakMinutes: Math.round(Math.max(0, breakMinutes)),
+    unclosed,
   };
 }
 
@@ -322,10 +345,7 @@ class JibbleService {
 
   async getReport(personId: string, personName: string, startDate: string, endDate: string, label: string): Promise<Report> {
     // Extend the fetch window by 1 day on each side so that cross-midnight
-    // shifts at the range boundaries are captured in full:
-    //  • fetchFrom: catches a session whose In is on startDate-1 (edge case)
-    //  • fetchTo:   catches the Out that lands on endDate+1 for a shift that
-    //               started on endDate (e.g. 7 PM → 3 AM next day)
+    // shifts at the range boundaries are captured in full.
     const fetchFrom = shiftDate(startDate, -1);
     const fetchTo   = shiftDate(endDate, +1);
     const filter = `personId eq ${personId} and belongsToDate ge ${fetchFrom} and belongsToDate le ${fetchTo}`;
@@ -333,13 +353,9 @@ class JibbleService {
 
     const raw = await this.request<unknown>('get', url);
     const entries = parseEntries(raw);
-
-    // Group entries into sessions (handles cross-midnight shifts)
     const sessions = groupIntoSessions(entries);
 
-    // Build per-date DayStats, attributing each session to its start date.
-    // Only include sessions whose start date falls within [startDate, endDate].
-    // Multiple sessions on the same date (e.g. two separate shifts) are summed.
+    // Attribute each session to its start date; merge multiple sessions on the same day.
     const byDate = new Map<string, DayStats>();
     for (const session of sessions) {
       if (session.date < startDate || session.date > endDate) continue;
@@ -350,35 +366,63 @@ class JibbleService {
         const existing = byDate.get(session.date)!;
         byDate.set(session.date, {
           date: session.date,
-          clockIn: existing.clockIn,                      // keep earliest clock-in
-          clockOut: stats.clockOut ?? existing.clockOut,  // keep latest clock-out
+          clockIn: existing.clockIn,                      // earliest clock-in of the day
+          clockOut: stats.clockOut ?? existing.clockOut,  // latest clock-out of the day
           workedMinutes: existing.workedMinutes + stats.workedMinutes,
           breakMinutes: existing.breakMinutes + stats.breakMinutes,
+          unclosed: existing.unclosed || stats.unclosed,
         });
       }
     }
 
-    // Count working days (Mon–Sat; Sunday off) in the requested range
+    const workingWeekdays = new Set(config.payroll.workingWeekdays);
+
+    // Walk every calendar day in the range:
+    //  • count working days
+    //  • for working days with no clock-in, add to absentDates
     let totalWorkingDays = 0;
+    const absentDates: string[] = [];
     const start = new Date(startDate + 'T00:00:00');
     const end = new Date(endDate + 'T00:00:00');
     for (const d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
-      if (d.getDay() !== 0) totalWorkingDays++;
+      if (!workingWeekdays.has(d.getDay())) continue;
+      totalWorkingDays++;
+      const ds = toDateStr(d);
+      const day = byDate.get(ds);
+      if (!day || day.clockIn === null) absentDates.push(ds);
     }
 
     const days = Array.from(byDate.values()).sort((a, b) => a.date.localeCompare(b.date));
-    const daysPresent = days.filter(d => d.clockIn !== null).length;
+
+    // Attendance counts only on working weekdays — work on a rest day (e.g. Sunday)
+    // is still included in totalWorkedMinutes but doesn't inflate attendance %.
+    const daysPresent = days.filter(d => {
+      if (d.clockIn === null) return false;
+      const dow = new Date(d.date + 'T00:00:00').getDay();
+      return workingWeekdays.has(dow);
+    }).length;
+
     const totalWorkedMinutes = days.reduce((s, d) => s + d.workedMinutes, 0);
     const totalBreakMinutes = days.reduce((s, d) => s + d.breakMinutes, 0);
+    const expectedTotalMinutes = Math.round(totalWorkingDays * config.payroll.expectedHoursPerDay * 60);
+    const diff = totalWorkedMinutes - expectedTotalMinutes;
+    const unloggedMinutes = diff < 0 ? -diff : 0;
+    const overtimeMinutes = diff > 0 ?  diff : 0;
+    const unclosedDates = days.filter(d => d.unclosed).map(d => d.date);
 
     return {
       personName, label, startDate, endDate,
       totalWorkingDays,
       daysPresent,
-      daysAbsent: Math.max(0, totalWorkingDays - daysPresent),
+      daysAbsent: absentDates.length,
+      absentDates,
       totalWorkedMinutes,
       totalBreakMinutes,
+      expectedTotalMinutes,
+      unloggedMinutes,
+      overtimeMinutes,
       days,
+      unclosedDates,
     };
   }
 }

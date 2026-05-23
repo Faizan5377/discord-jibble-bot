@@ -1,6 +1,7 @@
 import { ChatInputCommandInteraction, EmbedBuilder, ColorResolvable, PermissionsBitField } from 'discord.js';
 import { jibbleService, Report } from '../services/jibble';
 import { userMappingService } from '../services/userMapping';
+import { config } from '../config';
 import { logger } from '../utils/logger';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -60,20 +61,30 @@ function parseSingleDate(s: string, defaultYear: number): Date | null {
   return null;
 }
 
+// Salary cycle: runs from `cycleStartDay` of month N to (cycleStartDay-1) of month N+1.
+// e.g. for cycleStartDay=25, cycle is 25 Apr → 24 May.
+function currentSalaryCycle(today: Date): Period {
+  const cycleDay = config.payroll.cycleStartDay;
+  const startMonthYear = today.getDate() >= cycleDay
+    ? { y: today.getFullYear(), m: today.getMonth() }
+    : { y: today.getFullYear(), m: today.getMonth() - 1 };
+  const start = new Date(startMonthYear.y, startMonthYear.m, cycleDay);
+  const end = new Date(startMonthYear.y, startMonthYear.m + 1, cycleDay - 1);
+  const fmt = (d: Date): string => d.toLocaleDateString('en-US', { day: 'numeric', month: 'short' });
+  return {
+    startDate: toDateStr(start),
+    endDate: toDateStr(end),
+    label: `${fmt(start)} – ${fmt(end)} ${end.getFullYear()}`,
+  };
+}
+
 function parsePeriodArg(arg: string | null): Period | null {
-  // Use PKT date so default "current month" is correct for Pakistan time
+  // Use PKT date so defaults are correct for Pakistan time
   const today = new Date(new Date().toLocaleString('en-US', { timeZone: PKT }));
   const currentYear = today.getFullYear();
 
-  if (!arg) {
-    const start = new Date(today.getFullYear(), today.getMonth(), 1);
-    const end = new Date(today.getFullYear(), today.getMonth() + 1, 0);
-    return {
-      startDate: toDateStr(start),
-      endDate: toDateStr(end),
-      label: today.toLocaleString('en-US', { month: 'long', year: 'numeric' }),
-    };
-  }
+  // Default: current salary cycle (25th → 24th, or whatever SALARY_CYCLE_START_DAY is set to)
+  if (!arg) return currentSalaryCycle(today);
 
   const toIdx = arg.search(/\bto\b/i);
   if (toIdx !== -1) {
@@ -402,23 +413,40 @@ export async function handleUnregister(interaction: ChatInputCommandInteraction)
 
 // ─── Reports ─────────────────────────────────────────────────────────────────
 
+function fmtDate(yyyyMmDd: string, opts: Intl.DateTimeFormatOptions = { month: 'short', day: 'numeric' }): string {
+  return new Date(yyyyMmDd + 'T00:00:00').toLocaleDateString('en-US', opts);
+}
+
+// Truncates a comma-separated list to fit in a Discord embed field (1024 char limit).
+function fitField(items: string[], maxLen = 1000): string {
+  if (items.length === 0) return '—';
+  let joined = items.join(', ');
+  if (joined.length <= maxLen) return joined;
+  let kept = items.length;
+  while (kept > 0 && items.slice(0, kept).join(', ').length + ` …+${items.length - kept} more`.length > maxLen) {
+    kept--;
+  }
+  return items.slice(0, kept).join(', ') + ` …+${items.length - kept} more`;
+}
+
 function buildReportEmbed(r: Report): EmbedBuilder {
   const avgMinutes = r.daysPresent > 0 ? Math.round(r.totalWorkedMinutes / r.daysPresent) : 0;
   const attendancePct = r.totalWorkingDays > 0 ? Math.round((r.daysPresent / r.totalWorkingDays) * 100) : 0;
-  const filled = Math.round(attendancePct / 10);
+  const filled = Math.max(0, Math.min(10, Math.round(attendancePct / 10)));
   const bar = '█'.repeat(filled) + '░'.repeat(10 - filled);
 
+  // Daily log
   const lines: string[] = [];
   for (const d of r.days) {
     if (!d.clockIn) continue;
-    const dateStr = new Date(d.date + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+    const dateStr = fmtDate(d.date, { weekday: 'short', month: 'short', day: 'numeric' });
     const inStr = d.clockIn.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', timeZone: PKT });
-    const outStr = d.clockOut ? d.clockOut.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', timeZone: PKT }) : 'no out';
-    const brk = d.breakMinutes > 0 ? ` (break: ${fmtMinutes(d.breakMinutes)})` : '';
+    const outStr = d.clockOut
+      ? d.clockOut.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', timeZone: PKT })
+      : '⚠ no out';
+    const brk = d.breakMinutes > 0 ? ` (br: ${fmtMinutes(d.breakMinutes)})` : '';
     lines.push(`\`${dateStr}\`  ${inStr} → ${outStr}  **${fmtMinutes(d.workedMinutes)}**${brk}`);
   }
-
-  // Discord embed field limit is 1024 chars — truncate by characters, not lines
   let dailyLog = lines.join('\n');
   if (dailyLog.length > 1000) {
     let kept = 0;
@@ -427,16 +455,53 @@ function buildReportEmbed(r: Report): EmbedBuilder {
   }
   if (!dailyLog) dailyLog = 'No attendance records found.';
 
-  return new EmbedBuilder()
-    .setColor('#7289da')
+  // Hours: worked vs expected, with overtime/unlogged breakdown
+  const hoursLines: string[] = [
+    `Expected: **${fmtMinutes(r.expectedTotalMinutes)}**  (${config.payroll.expectedHoursPerDay}h × ${r.totalWorkingDays} working days)`,
+    `Worked: **${fmtMinutes(r.totalWorkedMinutes)}**`,
+  ];
+  if (r.unloggedMinutes > 0) {
+    hoursLines.push(`Unlogged: **${fmtMinutes(r.unloggedMinutes)}**  ⚠ (missing time vs expected)`);
+  } else if (r.overtimeMinutes > 0) {
+    hoursLines.push(`Overtime: **+${fmtMinutes(r.overtimeMinutes)}**`);
+  } else {
+    hoursLines.push('On target — worked = expected.');
+  }
+  hoursLines.push(`Breaks: ${fmtMinutes(r.totalBreakMinutes)} · Avg/day: ${fmtMinutes(avgMinutes)}`);
+
+  const absentList = r.absentDates.map(d => fmtDate(d, { weekday: 'short', month: 'short', day: 'numeric' }));
+
+  const embed = new EmbedBuilder()
+    .setColor(r.unloggedMinutes > 0 || r.unclosedDates.length > 0 ? '#ff9800' : '#7289da')
     .setTitle(`Report — ${r.label}`)
     .setDescription(`**${r.personName}**`)
     .addFields(
-      { name: 'Attendance', value: `${bar} **${attendancePct}%**\nPresent: **${r.daysPresent}** · Absent: **${r.daysAbsent}** · Working days: **${r.totalWorkingDays}**`, inline: false },
-      { name: 'Hours', value: `Total worked: **${fmtMinutes(r.totalWorkedMinutes)}**\nTotal breaks: **${fmtMinutes(r.totalBreakMinutes)}**\nAvg per day:  **${fmtMinutes(avgMinutes)}**`, inline: false },
-      { name: 'Daily Log', value: dailyLog, inline: false }
-    )
-    .setTimestamp();
+      {
+        name: 'Attendance',
+        value: `${bar} **${attendancePct}%**\nPresent: **${r.daysPresent}** · Absent: **${r.daysAbsent}** · Working days: **${r.totalWorkingDays}**`,
+        inline: false,
+      },
+      { name: 'Hours', value: hoursLines.join('\n'), inline: false },
+    );
+
+  if (absentList.length > 0) {
+    embed.addFields({ name: `Absent (${r.daysAbsent})`, value: fitField(absentList), inline: false });
+  }
+
+  if (r.unclosedDates.length > 0) {
+    const list = r.unclosedDates.map(d => fmtDate(d, { weekday: 'short', month: 'short', day: 'numeric' }));
+    embed.addFields({
+      name: '⚠ Needs Manual Review',
+      value:
+        'These days have a clock-in but no clock-out — worked time is **likely undercounted**. ' +
+        'Fix in Jibble before processing salary.\n' +
+        fitField(list),
+      inline: false,
+    });
+  }
+
+  embed.addFields({ name: 'Daily Log', value: dailyLog, inline: false });
+  return embed.setTimestamp();
 }
 
 export async function handleReport(interaction: ChatInputCommandInteraction): Promise<void> {
@@ -487,7 +552,20 @@ export async function handleReport(interaction: ChatInputCommandInteraction): Pr
       if (r.status === 'fulfilled') {
         const rep = r.value;
         const pct = rep.totalWorkingDays > 0 ? Math.round((rep.daysPresent / rep.totalWorkingDays) * 100) : 0;
-        rows.push(`**${rep.personName}**\n  Present: ${rep.daysPresent}/${rep.totalWorkingDays} days (${pct}%) · Worked: ${fmtMinutes(rep.totalWorkedMinutes)}`);
+        const flag = rep.unclosedDates.length > 0 ? ' ⚠' : '';
+        let hoursLine: string;
+        if (rep.unloggedMinutes > 0) {
+          hoursLine = `Worked ${fmtMinutes(rep.totalWorkedMinutes)} / ${fmtMinutes(rep.expectedTotalMinutes)} — **unlogged ${fmtMinutes(rep.unloggedMinutes)}**`;
+        } else if (rep.overtimeMinutes > 0) {
+          hoursLine = `Worked ${fmtMinutes(rep.totalWorkedMinutes)} / ${fmtMinutes(rep.expectedTotalMinutes)} (+${fmtMinutes(rep.overtimeMinutes)})`;
+        } else {
+          hoursLine = `Worked ${fmtMinutes(rep.totalWorkedMinutes)} / ${fmtMinutes(rep.expectedTotalMinutes)}`;
+        }
+        rows.push(
+          `**${rep.personName}**${flag}\n` +
+          `  Present ${rep.daysPresent}/${rep.totalWorkingDays} (${pct}%) · Absent ${rep.daysAbsent}\n` +
+          `  ${hoursLine}`,
+        );
       } else {
         const reason = r.reason instanceof Error ? r.reason.message : String(r.reason);
         rows.push(`**${allMappings[i].jibbleName}** — ❌ ${reason}`);
@@ -495,13 +573,15 @@ export async function handleReport(interaction: ChatInputCommandInteraction): Pr
     }
 
     try {
+      const desc = rows.join('\n\n') || 'No data.';
+      const value = desc.length > 4000 ? desc.slice(0, 3990) + '\n…(truncated)' : desc;
       await interaction.editReply({
         embeds: [
           new EmbedBuilder()
             .setColor('#7289da')
             .setTitle(`Team Report — ${period.label}`)
-            .setDescription(rows.join('\n\n') || 'No data.')
-            .setFooter({ text: `${allMappings.length} registered members · Use /report user:@someone for detail` })
+            .setDescription(value)
+            .setFooter({ text: `${allMappings.length} registered members · ⚠ = days with missing clock-out · Use /report user:@someone for detail` })
             .setTimestamp(),
         ],
       });
@@ -533,7 +613,7 @@ export async function handleHelp(interaction: ChatInputCommandInteraction): Prom
           .setDescription('> You have full administrator access.')
           .addFields(
             { name: 'Member Management', value: '`/register user:@user email:email` — Link a user to Jibble\n`/unregister user:@user` — Remove a user\'s link', inline: false },
-            { name: 'Reports', value: `\`/report\` — Team report (current month)\n\`/report user:@user\` — One person's report\n\`/report period:${thisMonth}\` — Specific month\n\`/report period:"25 ${prevMonth} to 25 ${thisMonth}"\` — Custom range\n\`/report user:@user period:${thisMonth}\` — Combine both`, inline: false },
+            { name: 'Reports', value: `\`/report\` — Team report for **current salary cycle** (default: ${config.payroll.cycleStartDay}th → ${config.payroll.cycleStartDay - 1}th)\n\`/report user:@user\` — One person's report\n\`/report period:${thisMonth}\` — Specific calendar month\n\`/report period:"${config.payroll.cycleStartDay} ${prevMonth} to ${config.payroll.cycleStartDay - 1} ${thisMonth}"\` — Custom range\n\`/report user:@user period:${thisMonth}\` — Combine both\n\nReports show: attendance %, days present/absent, expected vs worked hours, unlogged time, and overtime — all the inputs for processing salary.`, inline: false },
             { name: 'Status', value: '`/status` — Your own status\n`/status user:@user` — Another user\'s status', inline: false },
             { name: 'Time Tracking (your own)', value: '`/clockin` · `/break` · `/resume` · `/clockout`', inline: false },
             { name: 'Workflow Order', value: '`/clockin`  →  `/break`  →  `/resume`  →  `/clockout`\nThe bot blocks out-of-order commands.', inline: false },

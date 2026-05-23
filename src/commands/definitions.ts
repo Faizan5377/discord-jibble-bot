@@ -63,7 +63,7 @@ export const COMMAND_DEFS = [
     )
     .addStringOption(opt =>
       opt.setName('period')
-        .setDescription(`Period: "${_thisMonth}", "2026-03", "25 ${_prevMonth} to 25 ${_thisMonth}" (default: current month)`)
+        .setDescription(`e.g. "${_thisMonth}", "2026-03", "25 ${_prevMonth} to 24 ${_thisMonth}". Default: current salary cycle.`)
         .setRequired(false)
     ),
 
